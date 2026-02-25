@@ -2,18 +2,18 @@
  * pdf-extractor.ts
  *
  * Módulo de extracción de texto desde archivos PDF.
- * Usa la librería pdf-parse v2 (API basada en clases) para convertir
- * el binario del PDF en texto plano.
+ * Usa la librería `unpdf` — parser PDF puro en JavaScript,
+ * compatible con entornos serverless (Vercel, AWS Lambda, Cloudflare).
  *
  * Principio: Este módulo solo EXTRAE texto. No interpreta ni valida contenido.
  */
 
-import { PDFParse } from "pdf-parse";
+import { extractText } from "unpdf";
 import type { TextoExtraido, TipoDocumento } from "@/types";
 import { CONFIG_DEFAULT } from "@/types";
 
 // =============================================================================
-// 🔧 FUNCIÓN PRINCIPAL: Extracción de texto desde un Buffer PDF
+// FUNCIÓN PRINCIPAL: Extracción de texto desde un Buffer PDF
 // =============================================================================
 
 /**
@@ -25,19 +25,23 @@ import { CONFIG_DEFAULT } from "@/types";
  */
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
     try {
-        const parser = new PDFParse({ data: buffer });
-        const resultado = await parser.getText();
+        // unpdf espera un ArrayBuffer o Uint8Array
+        const { text: textPages, totalPages } = await extractText(new Uint8Array(buffer));
+
+        console.log(`[pdf-extractor] Páginas extraídas: ${totalPages}`);
+
+        // unpdf retorna un array de strings (uno por página), unir en un solo texto
+        const textoCompleto = Array.isArray(textPages) ? textPages.join("\n") : String(textPages);
 
         // Verificar que se extrajo contenido
-        if (!resultado.text || resultado.text.trim().length === 0) {
+        if (!textoCompleto || textoCompleto.trim().length === 0) {
             throw new Error(
                 "El PDF no contiene texto extraíble. Puede ser un PDF escaneado (imagen) sin OCR."
             );
         }
 
-        return resultado.text;
+        return textoCompleto;
     } catch (error: unknown) {
-        // Capturar errores de pdf-parse y re-lanzar con mensaje descriptivo
         const mensajeOriginal =
             error instanceof Error ? error.message : String(error);
 
@@ -63,7 +67,7 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
             );
         }
 
-        // Error genérico de extracción
+        // Error genérico
         console.error(
             `[pdf-extractor] Error extrayendo texto del PDF: ${mensajeOriginal}`
         );
@@ -72,18 +76,16 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
 }
 
 // =============================================================================
-// 🔧 FUNCIÓN COMPLETA: Extracción con metadatos (usada internamente)
+// FUNCIÓN COMPLETA: Extracción con metadatos
 // =============================================================================
 
 /**
  * Extrae texto de un PDF y retorna un objeto con metadatos completos.
- * Incluye validación de tamaño máximo.
  *
  * @param buffer - Buffer del archivo PDF
  * @param tipo - Tipo de documento (factura, ordenCompra, actaRecepcion)
  * @param nombreArchivo - Nombre original del archivo
  * @returns Objeto TextoExtraido con texto y metadatos
- * @throws Error si el archivo excede el tamaño máximo o no es un PDF válido
  */
 export async function extraerTextoPDF(
     buffer: Buffer,
@@ -98,7 +100,7 @@ export async function extraerTextoPDF(
         );
     }
 
-    // Extraer texto usando la función principal
+    // Extraer texto
     const texto = await extractTextFromPDF(buffer);
 
     return {
@@ -106,7 +108,6 @@ export async function extraerTextoPDF(
         texto,
         nombreArchivo,
         tamanoBytes: buffer.length,
-        // pdf-parse v2 no expone totalPages en getText(), se obtiene aparte si se necesita
         numeroPaginas: 0,
     };
 }
