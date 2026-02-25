@@ -267,24 +267,25 @@ export default function Dashboard() {
     }
   }, [archivos, todosListos]);
 
-  const descargarResolucion = useCallback(async () => {
+  const descargarResolucion = useCallback(async (format: "docx" | "pdf" = "docx") => {
     if (!resultado) return;
     setDescargando(true);
     try {
-      const res = await fetch("/api/generate", {
+      const res = await fetch(`/api/generate?format=${format}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(resultado),
       });
       if (!res.ok) {
         const err = await res.json();
-        throw new Error(err.error || "Error al generar el PDF.");
+        throw new Error(err.error || "Error al generar el documento.");
       }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Resolucion_Pago_SINAPSIS_${new Date().toISOString().split("T")[0]}.pdf`;
+      const ext = format === "docx" ? "docx" : "pdf";
+      a.download = `Resolucion_Pago_SINAPSIS_${new Date().toISOString().split("T")[0]}.${ext}`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -419,8 +420,8 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     <div className={`mb-4 flex h-12 w-12 items-center justify-center rounded-xl transition-colors ${sel
-                        ? "bg-[#1e40af] text-white"
-                        : "bg-[#f1f5f9] text-[#64748b] group-hover:bg-[#dbeafe] group-hover:text-[#1e40af]"
+                      ? "bg-[#1e40af] text-white"
+                      : "bg-[#f1f5f9] text-[#64748b] group-hover:bg-[#dbeafe] group-hover:text-[#1e40af]"
                       }`}>
                       {sel && !sel.esImagen ? (
                         <CheckCircle2 className="h-6 w-6" strokeWidth={1.8} />
@@ -557,10 +558,10 @@ export default function Dashboard() {
                       <div className={`flex flex-col items-center flex-1 ${activo ? "opacity-100" : pasado ? "opacity-80" : "opacity-40"
                         }`}>
                         <div className={`flex h-9 w-9 items-center justify-center rounded-xl mb-1.5 transition-colors ${activo
-                            ? "bg-[#1e3a8a] text-white"
-                            : pasado
-                              ? "bg-emerald-100 text-emerald-600"
-                              : "bg-[#f1f5f9] text-[#94a3b8]"
+                          ? "bg-[#1e3a8a] text-white"
+                          : pasado
+                            ? "bg-emerald-100 text-emerald-600"
+                            : "bg-[#f1f5f9] text-[#94a3b8]"
                           }`}>
                           {pasado ? (
                             <CheckCircle2 className="h-4 w-4" />
@@ -601,14 +602,14 @@ export default function Dashboard() {
 
             {/* Banner de estado */}
             <div className={`rounded-2xl border p-6 mb-5 ${resultado.validacion.estado === "APROBADO"
-                ? "bg-emerald-50 border-emerald-200"
-                : "bg-red-50 border-red-200"
+              ? "bg-emerald-50 border-emerald-200"
+              : "bg-red-50 border-red-200"
               }`}>
               <div className="flex items-center justify-between flex-wrap gap-4">
                 <div className="flex items-center gap-4">
                   <div className={`flex h-14 w-14 items-center justify-center rounded-2xl ${resultado.validacion.estado === "APROBADO"
-                      ? "bg-emerald-100 text-emerald-600"
-                      : "bg-red-100 text-red-600"
+                    ? "bg-emerald-100 text-emerald-600"
+                    : "bg-red-100 text-red-600"
                     }`}>
                     {resultado.validacion.estado === "APROBADO" ? (
                       <CheckCircle2 className="h-7 w-7" strokeWidth={1.8} />
@@ -632,23 +633,33 @@ export default function Dashboard() {
                 </div>
 
                 {resultado.validacion.estado === "APROBADO" && (
-                  <button
-                    onClick={descargarResolucion}
-                    disabled={descargando}
-                    className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-bold text-white shadow-md hover:bg-emerald-700 hover:shadow-lg active:scale-[0.97] transition-all"
-                  >
-                    {descargando ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Generando...
-                      </>
-                    ) : (
-                      <>
-                        <Download className="h-4 w-4" />
-                        Descargar Resolución
-                      </>
-                    )}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => descargarResolucion("docx")}
+                      disabled={descargando}
+                      className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-3 text-sm font-bold text-white shadow-md hover:bg-emerald-700 hover:shadow-lg active:scale-[0.97] transition-all"
+                    >
+                      {descargando ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                          Generando...
+                        </>
+                      ) : (
+                        <>
+                          <Download className="h-4 w-4" />
+                          Word (editable)
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => descargarResolucion("pdf")}
+                      disabled={descargando}
+                      className="inline-flex items-center gap-2 rounded-xl border border-[#e2e8f0] px-4 py-3 text-sm font-medium text-[#64748b] hover:bg-[#f1f5f9] transition-all"
+                    >
+                      <FileText className="h-4 w-4" />
+                      PDF
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -713,9 +724,9 @@ export default function Dashboard() {
 
             {/* Botón REPARO */}
             {resultado.validacion.estado === "REPARO" && (
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-wrap">
                 <button
-                  onClick={descargarResolucion}
+                  onClick={() => descargarResolucion("docx")}
                   disabled={descargando}
                   className="inline-flex items-center gap-2 rounded-xl border border-[#e2e8f0] px-5 py-2.5 text-sm font-medium text-[#64748b] hover:bg-[#f1f5f9] transition-all"
                 >
@@ -726,13 +737,21 @@ export default function Dashboard() {
                     </>
                   ) : (
                     <>
-                      <FileText className="h-4 w-4" />
-                      Descargar Informe de Reparo
+                      <Download className="h-4 w-4" />
+                      Word (editable)
                     </>
                   )}
                 </button>
+                <button
+                  onClick={() => descargarResolucion("pdf")}
+                  disabled={descargando}
+                  className="inline-flex items-center gap-2 rounded-xl border border-[#e2e8f0] px-5 py-2.5 text-sm font-medium text-[#64748b] hover:bg-[#f1f5f9] transition-all"
+                >
+                  <FileText className="h-4 w-4" />
+                  PDF
+                </button>
                 <span className="text-xs text-[#94a3b8]">
-                  El PDF incluirá las discrepancias detectadas.
+                  El documento incluirá las discrepancias detectadas.
                 </span>
               </div>
             )}
