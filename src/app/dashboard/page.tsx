@@ -158,6 +158,59 @@ export default function Dashboard() {
   });
 
   // ===========================================================================
+  // HELPERS
+  // ===========================================================================
+
+  /** Parseo seguro de respuestas — maneja errores non-JSON (ej: 413 de Vercel) */
+  async function safeParseError(res: Response): Promise<string> {
+    try {
+      const data = await res.json();
+      return data.error || data.message || `Error ${res.status}`;
+    } catch {
+      const text = await res.text().catch(() => "");
+      if (res.status === 413 || text.includes("Entity Too Large")) {
+        return "Los archivos son demasiado grandes. Intenta con imágenes de menor tamaño o en formato PDF.";
+      }
+      return text || `Error del servidor (${res.status})`;
+    }
+  }
+
+  /** Compresión de imagen en el navegador usando Canvas */
+  async function comprimirImagenCliente(file: File, maxAncho = 1400, calidadJPEG = 0.7): Promise<File> {
+    return new Promise((resolve, reject) => {
+      const img = new window.Image();
+      img.onload = () => {
+        let { width, height } = img;
+        // Redimensionar si excede maxAncho manteniendo proporción
+        if (width > maxAncho) {
+          height = Math.round(height * (maxAncho / width));
+          width = maxAncho;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) { resolve(file); return; }
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) { resolve(file); return; }
+            const comprimido = new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), {
+              type: "image/jpeg",
+            });
+            console.log(`[compress] ${file.name}: ${(file.size / 1024).toFixed(0)}KB → ${(comprimido.size / 1024).toFixed(0)}KB`);
+            resolve(comprimido);
+          },
+          "image/jpeg",
+          calidadJPEG
+        );
+      };
+      img.onerror = () => reject(new Error("No se pudo leer la imagen."));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+
+  // ===========================================================================
   // HANDLERS
   // ===========================================================================
 
@@ -195,19 +248,30 @@ export default function Dashboard() {
     setResultado(null);
 
     try {
-      // Paso 1: Upload
+      // Paso 1: Upload (con compresión client-side de imágenes)
       setEstado("CARGANDO");
-      setMensaje("Subiendo archivos al servidor...");
+      setMensaje("Comprimiendo y subiendo archivos...");
+
+      // Comprimir imágenes en el navegador antes de subir
+      const prepararArchivo = async (sel: ArchivoSeleccionado): Promise<File> => {
+        if (sel.esImagen) return comprimirImagenCliente(sel.file);
+        return sel.file;
+      };
+
+      const [facFile, ocFile, actaFile] = await Promise.all([
+        prepararArchivo(archivos.factura!),
+        prepararArchivo(archivos.ordenCompra!),
+        prepararArchivo(archivos.actaRecepcion!),
+      ]);
 
       const formData = new FormData();
-      formData.append("factura", archivos.factura!.file);
-      formData.append("ordenCompra", archivos.ordenCompra!.file);
-      formData.append("actaRecepcion", archivos.actaRecepcion!.file);
+      formData.append("factura", facFile);
+      formData.append("ordenCompra", ocFile);
+      formData.append("actaRecepcion", actaFile);
 
       const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
       if (!uploadRes.ok) {
-        const err = await uploadRes.json();
-        throw new Error(err.error || "Error al subir los archivos.");
+        throw new Error(await safeParseError(uploadRes));
       }
 
       const uploadData = await uploadRes.json();
@@ -234,8 +298,7 @@ export default function Dashboard() {
       });
 
       if (!extractRes.ok) {
-        const err = await extractRes.json();
-        throw new Error(err.error || "Error al analizar con IA.");
+        throw new Error(await safeParseError(extractRes));
       }
 
       const extractData = await extractRes.json();
@@ -251,8 +314,7 @@ export default function Dashboard() {
       });
 
       if (!validateRes.ok) {
-        const err = await validateRes.json();
-        throw new Error(err.error || "Error en la validación cruzada.");
+        throw new Error(await safeParseError(validateRes));
       }
 
       const validateData = await validateRes.json();

@@ -1,18 +1,18 @@
 /**
  * image-processor.ts
  *
- * Módulo de procesamiento de imágenes para Anthropic Vision API.
- * 
- * Versión SERVERLESS — sin dependencias nativas (sin sharp).
- * Compatible con Vercel, AWS Lambda, Cloudflare Workers.
+ * Módulo de compresión y redimensión automática de imágenes.
+ * Garantiza que las imágenes no excedan el límite de 5MB de Anthropic
+ * para la API de Vision, manteniendo suficiente calidad para OCR.
  *
  * Estrategia:
- * 1. Si la imagen está bajo 4MB → pasar tal cual.
- * 2. Si excede 4MB → informar al usuario que reduzca la imagen.
- *
- * Nota: La mayoría de fotos de celular moderno están bajo 4MB en JPEG.
- * Las que excedan serán rechazadas con un mensaje claro.
+ * 1. Si la imagen ya está bajo 4MB → retornar tal cual.
+ * 2. Redimensionar a un máximo de 2048px en el lado más largo.
+ * 3. Comprimir iterativamente reduciendo calidad hasta estar bajo 4MB.
+ * 4. Convertir siempre a JPEG para máxima compresión.
  */
+
+import sharp from "sharp";
 
 // =============================================================================
 // CONSTANTES
@@ -21,37 +21,45 @@
 /** Límite seguro: 4MB (deja margen sobre el límite de 5MB de Anthropic) */
 const MAX_BYTES = 4 * 1024 * 1024;
 
-// =============================================================================
-// TIPOS
-// =============================================================================
+/** Resolución máxima: 2048px en el lado más largo (suficiente para OCR) */
+const MAX_DIMENSION = 2048;
 
-export interface ResultadoProcesamiento {
-    /** Buffer de la imagen procesada */
-    buffer: Buffer;
-    /** MIME type resultante */
-    mimeType: string;
-    /** Tamaño original en bytes */
-    tamanoOriginal: number;
-    /** Tamaño final en bytes */
-    tamanoFinal: number;
-    /** true si la imagen fue procesada */
-    fueProcesada: boolean;
-    /** Calidad usada */
-    calidadUsada: number;
-}
+/** Calidad JPEG inicial para compresión (80% es buen balance calidad/tamaño) */
+const CALIDAD_INICIAL = 80;
+
+/** Paso de reducción de calidad en cada iteración */
+const PASO_CALIDAD = 10;
+
+/** Calidad mínima permitida (bajo esto la imagen se vuelve ilegible) */
+const CALIDAD_MINIMA = 30;
 
 // =============================================================================
 // FUNCIÓN PRINCIPAL
 // =============================================================================
 
+export interface ResultadoProcesamiento {
+    /** Buffer de la imagen procesada */
+    buffer: Buffer;
+    /** MIME type resultante (siempre image/jpeg después de procesamiento) */
+    mimeType: string;
+    /** Tamaño original en bytes */
+    tamanoOriginal: number;
+    /** Tamaño final en bytes */
+    tamanoFinal: number;
+    /** true si la imagen fue redimensionada/comprimida */
+    fueProcesada: boolean;
+    /** Calidad JPEG usada (si fue comprimida) */
+    calidadUsada: number;
+}
+
 /**
  * Procesa una imagen para que cumpla con los límites de Anthropic Vision.
- * En esta versión serverless, verifica el tamaño y pasa la imagen sin modificar.
+ * Si la imagen ya es suficientemente pequeña, la retorna sin cambios.
+ * Si no, la redimensiona y/o comprime iterativamente.
  *
  * @param buffer - Buffer de la imagen original
  * @param mimeType - MIME type original (image/jpeg, image/png, image/webp)
- * @returns ResultadoProcesamiento con el buffer y metadata
- * @throws Error si la imagen excede 4MB
+ * @returns ResultadoProcesamiento con el buffer procesado y metadata
  */
 export async function procesarImagen(
     buffer: Buffer,
@@ -59,25 +67,85 @@ export async function procesarImagen(
 ): Promise<ResultadoProcesamiento> {
     const tamanoOriginal = buffer.length;
 
-    // Verificar que no exceda el límite
-    if (tamanoOriginal > MAX_BYTES) {
-        const tamanoMB = (tamanoOriginal / 1024 / 1024).toFixed(1);
-        throw new Error(
-            `La imagen pesa ${tamanoMB}MB y excede el límite de 4MB para análisis con IA. ` +
-            `Por favor, reduzca el tamaño de la imagen antes de subirla (use una resolución menor o comprima el archivo).`
+    // Si ya está bajo el límite → retornar sin procesar
+    if (tamanoOriginal <= MAX_BYTES) {
+        return {
+            buffer,
+            mimeType,
+            tamanoOriginal,
+            tamanoFinal: tamanoOriginal,
+            fueProcesada: false,
+            calidadUsada: 100,
+        };
+    }
+
+    // ─── Paso 1: Redimensionar si excede dimensiones máximas ──────────
+    let imagen = sharp(buffer);
+    const metadata = await imagen.metadata();
+
+    const ancho = metadata.width ?? 0;
+    const alto = metadata.height ?? 0;
+    const ladoMayor = Math.max(ancho, alto);
+
+    if (ladoMayor > MAX_DIMENSION) {
+        imagen = imagen.resize({
+            width: ancho >= alto ? MAX_DIMENSION : undefined,
+            height: alto > ancho ? MAX_DIMENSION : undefined,
+            fit: "inside",
+            withoutEnlargement: true,
+        });
+        console.log(
+            `[image-processor] 📐 Redimensionando de ${ancho}x${alto} → max ${MAX_DIMENSION}px`
         );
     }
 
+    // ─── Paso 2: Compresión iterativa en JPEG ─────────────────────────
+    let calidad = CALIDAD_INICIAL;
+    let resultado: Buffer;
+
+    // Primera compresión
+    resultado = await imagen.jpeg({ quality: calidad, mozjpeg: true }).toBuffer();
+
     console.log(
-        `[image-processor] ✅ Imagen aceptada: ${(tamanoOriginal / 1024).toFixed(0)}KB (${mimeType})`
+        `[image-processor] 🗜️  Comprimiendo: ${(tamanoOriginal / 1024 / 1024).toFixed(1)}MB → ${(resultado.length / 1024 / 1024).toFixed(1)}MB (calidad: ${calidad}%)`
+    );
+
+    // Reducir calidad iterativamente si sigue siendo muy grande
+    while (resultado.length > MAX_BYTES && calidad > CALIDAD_MINIMA) {
+        calidad -= PASO_CALIDAD;
+        resultado = await sharp(buffer)
+            .resize({
+                width: ancho >= alto ? MAX_DIMENSION : undefined,
+                height: alto > ancho ? MAX_DIMENSION : undefined,
+                fit: "inside",
+                withoutEnlargement: true,
+            })
+            .jpeg({ quality: calidad, mozjpeg: true })
+            .toBuffer();
+
+        console.log(
+            `[image-processor] 🗜️  Re-comprimiendo → ${(resultado.length / 1024 / 1024).toFixed(1)}MB (calidad: ${calidad}%)`
+        );
+    }
+
+    // Verificación final
+    if (resultado.length > MAX_BYTES) {
+        console.warn(
+            `[image-processor] ⚠️ Imagen sigue grande (${(resultado.length / 1024 / 1024).toFixed(1)}MB) después de compresión máxima`
+        );
+    }
+
+    const reduccion = ((1 - resultado.length / tamanoOriginal) * 100).toFixed(0);
+    console.log(
+        `[image-processor] ✅ Imagen procesada: ${(tamanoOriginal / 1024 / 1024).toFixed(1)}MB → ${(resultado.length / 1024 / 1024).toFixed(1)}MB (${reduccion}% reducción, calidad: ${calidad}%)`
     );
 
     return {
-        buffer,
-        mimeType,
+        buffer: resultado,
+        mimeType: "image/jpeg", // Siempre JPEG después de compresión
         tamanoOriginal,
-        tamanoFinal: tamanoOriginal,
-        fueProcesada: false,
-        calidadUsada: 100,
+        tamanoFinal: resultado.length,
+        fueProcesada: true,
+        calidadUsada: calidad,
     };
 }
